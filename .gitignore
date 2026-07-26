@@ -4,3 +4,6 @@ models
 scripts
 test
 command.sh
+.claude
+__pycache__/
+*.pyc

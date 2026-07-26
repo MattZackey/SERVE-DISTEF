@@ -35,16 +35,15 @@ def preprocess(video_path, num_frames, period):
 
 
 def predict_ef(video_path, ef_session, ef_input, ef_output, qr_session, qr_input, qr_output, num_frames, period):
-    """Predict EF and its quantiles for a single video, returned as a dict."""
+    """Predict EF and Quantiles"""
     
     x = preprocess(video_path, num_frames, period)
     logger.debug(f"Model input shape: {x.shape}")
 
-    # ef_pred = ef_session.run([ef_output], {ef_input: x})[0]
-    # ef = float(np.asarray(ef_pred).reshape(-1)[0])
+    ef_pred = ef_session.run([ef_output], {ef_input: x})[0]
+    ef = float(np.asarray(ef_pred).reshape(-1)[0])
 
     qr_pred = qr_session.run([qr_output], {qr_input: x})[0]
     quantiles = [float(v) for v in np.asarray(qr_pred).reshape(-1)]
 
-    # return {"ejection_fraction": ef, "quantiles": quantiles}
-    return {"quantiles": quantiles}
+    return {"point_estimate": ef, "quantiles": quantiles}

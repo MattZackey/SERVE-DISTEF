@@ -3,11 +3,18 @@
 import os
 import argparse
 import configparser
+import logging
 import boto3
 from botocore.exceptions import ClientError, ParamValidationError
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 _cfg = configparser.ConfigParser()
-_cfg.read(os.path.join(os.path.dirname(__file__), "config.ini"))
+_cfg.read("config.ini")
 aws_cfg = _cfg["aws"]
 
 REGION       = aws_cfg["region"]
@@ -46,21 +53,21 @@ def create_model():
                 "Environment": {"MODEL_DIR": "/opt/ml/model"},
             },
         )
-        print("created model", MODEL_NAME)
-        
+        logger.info("created model %s", MODEL_NAME)
+
     except ClientError as e:
         code = e.response["Error"]["Code"]
         if code == "ValidationException" and "already exists" in str(e):
-            print(f"model {MODEL_NAME} already exists, skipping")
+            logger.warning("model %s already exists, skipping", MODEL_NAME)
         elif code == "ResourceNotFound":
-            print(f"role or ECR image not found: {e}")
+            logger.error("role or ECR image not found: %s", e)
             raise
         else:
-            print(f"failed to create model: {e}")
+            logger.error("failed to create model: %s", e)
             raise
-        
+
     except ParamValidationError as e:
-        print(f"bad parameters for create_model: {e}")
+        logger.error("bad parameters for create_model: %s", e)
         raise
     
 
@@ -89,34 +96,67 @@ def create_endpoint_config():
                 "ClientConfig": {"MaxConcurrentInvocationsPerInstance": MAX_CONCURRENT},
             },
         )
-        print("created endpoint config", CONFIG_NAME)
-        
+        logger.info("created endpoint config %s", CONFIG_NAME)
+
     except ClientError as e:
         code = e.response["Error"]["Code"]
         if code == "ValidationException" and "already exists" in str(e):
-            print(f"endpoint config {CONFIG_NAME} already exists, skipping")
+            logger.warning("endpoint config %s already exists, skipping", CONFIG_NAME)
         else:
-            print(f"failed to create endpoint config: {e}")
+            logger.error("failed to create endpoint config: %s", e)
             raise
     
 def create_endpoint():
     
     try:
         sm.create_endpoint(EndpointName=ENDPOINT, EndpointConfigName=CONFIG_NAME)
-        print("creating endpoint", ENDPOINT, "...")
-        
+        logger.info("creating endpoint %s ...", ENDPOINT)
+
     except ClientError as e:
         code = e.response["Error"]["Code"]
         if code == "ValidationException" and "already exists" in str(e):
-            print(f"endpoint {ENDPOINT} already exists, skipping")
+            logger.warning("endpoint %s already exists, skipping", ENDPOINT)
         else:
-            print(f"failed to create endpoint: {e}")
+            logger.error("failed to create endpoint: %s", e)
             raise
         
 def teardown():
-    sm.delete_endpoint(EndpointName=ENDPOINT)
-    sm.delete_endpoint_config(EndpointConfigName=CONFIG_NAME)
-    sm.delete_model(ModelName=MODEL_NAME)
+
+    try:
+        sm.delete_endpoint(EndpointName=ENDPOINT)
+        logger.info("deleted endpoint %s", ENDPOINT)
+
+    except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code == "ValidationException" and "not find" in str(e):
+            logger.warning("endpoint %s not found, skipping", ENDPOINT)
+        else:
+            logger.error("failed to delete endpoint: %s", e)
+            raise
+
+    try:
+        sm.delete_endpoint_config(EndpointConfigName=CONFIG_NAME)
+        logger.info("deleted endpoint config %s", CONFIG_NAME)
+
+    except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code == "ValidationException" and "not find" in str(e):
+            logger.warning("endpoint config %s not found, skipping", CONFIG_NAME)
+        else:
+            logger.error("failed to delete endpoint config: %s", e)
+            raise
+
+    try:
+        sm.delete_model(ModelName=MODEL_NAME)
+        logger.info("deleted model %s", MODEL_NAME)
+
+    except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code == "ValidationException" and "not find" in str(e):
+            logger.warning("model %s not found, skipping", MODEL_NAME)
+        else:
+            logger.error("failed to delete model: %s", e)
+            raise
  
 if __name__ == '__main__':   
     
@@ -133,7 +173,9 @@ if __name__ == '__main__':
         create_endpoint()
     
         sm.get_waiter("endpoint_in_service").wait(EndpointName=ENDPOINT)
-        print("endpoint InService")
-    
+        logger.info("endpoint inservice")
+
     elif args.action == "teardown":
         teardown()
+
+        logger.info("endpoint removed")
