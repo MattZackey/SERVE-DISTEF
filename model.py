@@ -35,7 +35,7 @@ def preprocess(video_path, num_frames, period):
 
 
 def predict_ef(video_path, ef_session, ef_input, ef_output, qr_session, qr_input, qr_output, num_frames, period):
-    """Predict EF and quantiles"""
+    """Predict EF and Quantiles"""
     
     x = preprocess(video_path, num_frames, period)
     logger.debug(f"Model input shape: {x.shape}")
