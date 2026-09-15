@@ -7,3 +7,4 @@ command.sh
 .claude
 __pycache__/
 *.pyc
+examples
