@@ -6,8 +6,8 @@
             "Effect": "Allow",
             "Action": "sns:Publish",
             "Resource": [
-                "arn:aws:sns:us-east-1:{ACCOUNT_ID}:EchoPredSuccess",
-                "arn:aws:sns:us-east-1:{ACCOUNT_ID}:EchoPredFail"
+                "arn:aws:sns:{REGION}:{ACCOUNT_ID}:EchoPredSuccess",
+                "arn:aws:sns:{REGION}:{ACCOUNT_ID}:EchoPredFail"
             ]
         }
     ]
