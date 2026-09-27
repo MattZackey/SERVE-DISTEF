@@ -7,7 +7,7 @@
                 "dynamodb:PutItem",
                 "dynamodb:UpdateItem"
             ],
-            "Resource": "arn:aws:dynamodb:{REGION}:{ACCOUNT_ID}:table/EchoTest"
+            "Resource": "arn:aws:dynamodb:{REGION}:{ACCOUNT_ID}:table/EchoStatus"
         }
     ]
 }
