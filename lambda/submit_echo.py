@@ -4,7 +4,7 @@ import uuid
 import boto3
 import botocore.exceptions
 import logging
-import datetime, timezone
+from datetime import datetime, timezone
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
