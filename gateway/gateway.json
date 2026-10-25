@@ -4,10 +4,41 @@
     "version" : "2026-10-16T15:49:52Z",
     "title" : "echo-predict"
   },
-  "host" : "hblpfwq6tg.execute-api.{REGION}.amazonaws.com",
+  "host" : "rcpqb5ntki.execute-api.{REGION}.amazonaws.com",
   "basePath" : "/dev",
   "schemes" : [ "https" ],
   "paths" : {
+    "/fetch" : {
+      "get" : {
+        "produces" : [ "application/json" ],
+        "responses" : {
+          "200" : {
+            "description" : "200 response",
+            "schema" : {
+              "$ref" : "#/definitions/Empty"
+            }
+          }
+        },
+        "security" : [ {
+          "sigv4" : [ ]
+        } ],
+        "x-amazon-apigateway-integration" : {
+          "credentials" : "arn:aws:iam::{ACCOUNT_ID}:role/apigateway-lambda-role",
+          "uri" : "arn:aws:apigateway:{REGION}:lambda:path/2015-03-31/functions/arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:FetchPredict/invocations",
+          "httpMethod" : "POST",
+          "responses" : {
+            "default" : {
+              "statusCode" : "200"
+            }
+          },
+          "passthroughBehavior" : "when_no_match",
+          "timeoutInMillis" : 29000,
+          "responseTransferMode" : "BUFFERED",
+          "contentHandling" : "CONVERT_TO_TEXT",
+          "type" : "aws_proxy"
+        }
+      }
+    },
     "/poll" : {
       "get" : {
         "produces" : [ "application/json" ],
@@ -23,8 +54,8 @@
           "sigv4" : [ ]
         } ],
         "x-amazon-apigateway-integration" : {
-          "uri" : "arn:aws:apigateway:{REGION}:lambda:path/2015-03-31/functions/arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:PollPredict/invocations",
           "credentials" : "arn:aws:iam::{ACCOUNT_ID}:role/apigateway-lambda-role",
+          "uri" : "arn:aws:apigateway:{REGION}:lambda:path/2015-03-31/functions/arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:PollPredict/invocations",
           "httpMethod" : "POST",
           "responses" : {
             "default" : {
@@ -54,8 +85,8 @@
           "sigv4" : [ ]
         } ],
         "x-amazon-apigateway-integration" : {
-          "uri" : "arn:aws:apigateway:{REGION}:lambda:path/2015-03-31/functions/arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:UploadVideo/invocations",
           "credentials" : "arn:aws:iam::{ACCOUNT_ID}:role/apigateway-lambda-role",
+          "uri" : "arn:aws:apigateway:{REGION}:lambda:path/2015-03-31/functions/arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:UploadVideo/invocations",
           "httpMethod" : "POST",
           "responses" : {
             "default" : {
@@ -86,5 +117,5 @@
     }
   },
   "x-amazon-apigateway-security-policy" : "TLS_1_0",
-  "x-amazon-apigateway-binary-media-types" : [ "multipart/form-data", "video/x-msvideo"]
+  "x-amazon-apigateway-binary-media-types" : [ "multipart/form-data", "video/x-msvideo" ]
 }

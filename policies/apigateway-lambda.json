@@ -1,0 +1,15 @@
+{
+	"Version": "2012-10-17",
+	"Statement": [
+		{
+			"Sid": "VisualEditor0",
+			"Effect": "Allow",
+			"Action": "lambda:InvokeFunction",
+			"Resource": [
+				"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:UploadVideo",
+				"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:PollPredict",
+				"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:FetchPredict"
+			]
+		}
+	]
+}
