@@ -241,3 +241,62 @@ client → API Gateway → Lambda → S3 put + invoke_endpoint_async → 202 { i
 The Lambda accepts the upload, writes it to the input prefix, calls `invoke_endpoint_async`, and returns `202 Accepted` with the inference ID / output location. This gives authentication, throttling, request validation, and a stable public URL without distributing AWS credentials — and pairs naturally with the SNS work above, since the client gets an immediate acknowledgement and an asynchronous completion event.
 
 ---
+
+
+### Submitting a prediction
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as API Gateway (SigV4)
+    participant U as λ UploadVideo
+    participant SI as S3 (input)
+    participant R as λ RecordPredictVideo
+    participant D as DynamoDB (EchoStatus)
+    participant E as ECR (echo:latest)
+    participant M as SageMaker async endpoint
+    participant SO as S3 (preds-success / preds-fail)
+    participant N as SNS (EchoPredSuccess / EchoPredFail)
+    participant H as λ completion handler
+
+    E-->>M: container image pulled at deploy
+    C->>G: POST /upload (video)
+    G->>U: invoke
+    U->>SI: put_object(input/<job_id>.avi)
+    U-->>C: { key }
+    SI->>R: S3 event
+    R->>D: put_item(status = queued)
+    R->>M: invoke_endpoint_async (on successful write)
+    M->>SI: read input video
+    M->>SO: write prediction JSON
+    M->>N: publish success / failure
+    N->>H: trigger
+    H->>D: update status = success / failed + output_location
+```
+
+### Fetching the result (polling)
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as API Gateway (SigV4)
+    participant P as λ PollPredict
+    participant F as λ FetchPredict
+    participant D as DynamoDB (EchoStatus)
+    participant S as S3 (preds-success)
+
+    loop until status is success or failed
+        C->>G: GET /poll?job_id=...
+        G->>P: invoke
+        P->>D: get_item(job_id)
+        D-->>P: status (queued / success / failed)
+        P-->>C: { job_id, status }
+    end
+    C->>G: GET /fetch?job_id=...
+    G->>F: invoke
+    F->>D: get_item(job_id)
+    D-->>F: output_location
+    F->>S: get_object(output_location)
+    S-->>F: prediction JSON
+    F-->>C: { job_id, status, ejection_fraction, quantiles }
+```

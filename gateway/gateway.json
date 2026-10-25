@@ -117,5 +117,5 @@
     }
   },
   "x-amazon-apigateway-security-policy" : "TLS_1_0",
-  "x-amazon-apigateway-binary-media-types" : [ "multipart/form-data", "video/x-msvideo" ]
+  "x-amazon-apigateway-binary-media-types" : [ "multipart/form-data", "video/x-msvideo"]
 }
