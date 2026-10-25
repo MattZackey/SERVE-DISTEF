@@ -2,7 +2,6 @@ import configparser
 import json
 import re
 from pathlib import Path
-
 import boto3
 
 cfg = configparser.ConfigParser()

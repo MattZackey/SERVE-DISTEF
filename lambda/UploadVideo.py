@@ -3,7 +3,6 @@ import json
 import os
 import uuid
 from urllib.parse import quote
-
 import boto3
 from botocore.exceptions import ClientError
 
@@ -21,8 +20,6 @@ def lambda_handler(event, context):
         return _response(400, {"error": "Request body is empty"})
 
     if not event.get("isBase64Encoded"):
-        # Binary uploads must arrive base64-encoded; plain text means Binary Media Types
-        # isn't configured on the API, and the file would be corrupted.
         return _response(400, {"error": "Expected binary body; check API Gateway binary media types"})
 
     data = base64.b64decode(body)
