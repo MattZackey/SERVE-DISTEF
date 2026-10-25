@@ -12,28 +12,64 @@ A bare point estimate, though, is misleading for this task, even expert readings
 
 ---
 
-## Architecture
+# Architecture
 
+## Submitting a prediction
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as API Gateway (SigV4)
+    participant U as λ UploadVideo
+    participant SI as S3 (input)
+    participant R as λ RecordPredictVideo
+    participant D as DynamoDB (EchoStatus)
+    participant E as ECR (echo:latest)
+    participant M as SageMaker async endpoint
+    participant SO as S3 (preds-success / preds-fail)
+    participant N as SNS (EchoPredSuccess / EchoPredFail)
+    participant H as λ completion handler
+
+    E-->>M: container image pulled at deploy
+    C->>G: POST /upload (video)
+    G->>U: invoke
+    U->>SI: put_object(input/<job_id>.avi)
+    U-->>C: { job_id }
+    SI->>R: S3 event
+    R->>D: put_item(status = queued)
+    R->>M: invoke_endpoint_async (on successful write)
+    M->>SI: read input video
+    M->>SO: write prediction JSON
+    M->>N: publish success / failure
+    N->>H: trigger
+    H->>D: update status = success / failed + output_location
 ```
-client
-  │  upload video
-  ▼
-S3  s3://<your-bucket>/input/study.avi
-  │  invoke_endpoint_async(InputLocation=...)
-  ▼
-SageMaker async endpoint  (serving-echo-async, ml.m5.xlarge)
-  │  streams the S3 object as the HTTP body
-  ▼
-container  POST /invocations   (FastAPI, serve.py)
-  │  loadvideo → frame sampling → uint8 tensor (1, 3, 64, 112, 112)
-  ▼
-onnxruntime
-  ├── ef_model.onnx        → ef        (B, 1)  
-  └── quantile_model.onnx  → quantiles (B, 2)   
-  │  JSON
-  ▼
-S3  s3://<your-bucket>/echo-serve/preds-success/<uuid>.out
-    s3://<your-bucket>/echo-serve/preds-fail/     (on error)
+
+## Polling and fetching result
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as API Gateway (SigV4)
+    participant P as λ PollPredict
+    participant F as λ FetchPredict
+    participant D as DynamoDB (EchoStatus)
+    participant S as S3 (preds-success)
+
+    loop until status is success or failed
+        C->>G: GET /poll?job_id=...
+        G->>P: invoke
+        P->>D: get_item(job_id)
+        D-->>P: status (queued / success / failed)
+        P-->>C: { job_id, status }
+    end
+    C->>G: GET /fetch?job_id=...
+    G->>F: invoke
+    F->>D: get_item(job_id)
+    D-->>F: output_location
+    F->>S: get_object(output_location)
+    S-->>F: prediction JSON
+    F-->>C: { job_id, status, ejection_fraction, quantiles }
 ```
 
 ---
@@ -214,89 +250,3 @@ curl -s -X POST --data-binary @test/0X1A3E7BF1DFB132FB.avi \
 `MODEL_DIR` (`serve.py:9-11`) defaults to `/opt/ml/model` and **falls back to `./models`** when that path doesn't exist — which is what lets the same code run locally and in SageMaker with no changes.
 
 ---
-
-## Roadmap
-
-### SNS notifications
-
-Replace the S3 polling loop above with a push notification. The scaffolding is already in place, commented out at `deploy.py:27` and `deploy.py:72-76`:
-
-- Add an `[sns]` section to `config.ini` with `success_topic_arn` and `error_topic_arn`
-- Uncomment the `sns` boto3 client
-- Populate `AsyncInferenceConfig.OutputConfig.NotificationConfig` with `SuccessTopic` / `ErrorTopic`
-- Create the topics (and subscriptions) as part of `--action deploy`, delete them in `teardown()`
-
-Each completed inference then publishes a message containing the `OutputLocation`, so downstream consumers react on completion instead of polling.
-
-### API Gateway front door
-
-Put a REST/HTTP API in front of the endpoint so clients never touch SageMaker or S3 directly:
-
-```
-client → API Gateway → Lambda → S3 put + invoke_endpoint_async → 202 { inference_id }
-                                                    │
-                                                    └→ SNS → client notified on completion
-```
-
-The Lambda accepts the upload, writes it to the input prefix, calls `invoke_endpoint_async`, and returns `202 Accepted` with the inference ID / output location. This gives authentication, throttling, request validation, and a stable public URL without distributing AWS credentials — and pairs naturally with the SNS work above, since the client gets an immediate acknowledgement and an asynchronous completion event.
-
----
-
-
-### Submitting a prediction
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant G as API Gateway (SigV4)
-    participant U as λ UploadVideo
-    participant SI as S3 (input)
-    participant R as λ RecordPredictVideo
-    participant D as DynamoDB (EchoStatus)
-    participant E as ECR (echo:latest)
-    participant M as SageMaker async endpoint
-    participant SO as S3 (preds-success / preds-fail)
-    participant N as SNS (EchoPredSuccess / EchoPredFail)
-    participant H as λ completion handler
-
-    E-->>M: container image pulled at deploy
-    C->>G: POST /upload (video)
-    G->>U: invoke
-    U->>SI: put_object(input/<job_id>.avi)
-    U-->>C: { key }
-    SI->>R: S3 event
-    R->>D: put_item(status = queued)
-    R->>M: invoke_endpoint_async (on successful write)
-    M->>SI: read input video
-    M->>SO: write prediction JSON
-    M->>N: publish success / failure
-    N->>H: trigger
-    H->>D: update status = success / failed + output_location
-```
-
-### Fetching the result (polling)
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant G as API Gateway (SigV4)
-    participant P as λ PollPredict
-    participant F as λ FetchPredict
-    participant D as DynamoDB (EchoStatus)
-    participant S as S3 (preds-success)
-
-    loop until status is success or failed
-        C->>G: GET /poll?job_id=...
-        G->>P: invoke
-        P->>D: get_item(job_id)
-        D-->>P: status (queued / success / failed)
-        P-->>C: { job_id, status }
-    end
-    C->>G: GET /fetch?job_id=...
-    G->>F: invoke
-    F->>D: get_item(job_id)
-    D-->>F: output_location
-    F->>S: get_object(output_location)
-    S-->>F: prediction JSON
-    F-->>C: { job_id, status, ejection_fraction, quantiles }
-```
