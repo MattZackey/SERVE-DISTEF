@@ -13,9 +13,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load in config
+# Load in config from the repo root, wherever the script is run from
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.ini"
 _cfg = configparser.ConfigParser()
-if not _cfg.read("config.ini"):
+if not _cfg.read(CONFIG_PATH):
     raise SystemExit("could not read config file")
 try:
     aws_cfg = _cfg["aws"]

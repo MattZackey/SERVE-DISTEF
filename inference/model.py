@@ -2,7 +2,7 @@ import json
 import sys
 import numpy as np
 import onnxruntime as ort
-from utils import loadvideo
+from video import loadvideo
 import logging
 
 logging.basicConfig(level=logging.DEBUG)

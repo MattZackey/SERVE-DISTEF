@@ -144,7 +144,7 @@ Return the prediction for a finished job.
 ```
 `ejection_fraction` is the point estimate in percent. `quantiles` is the lower and upper bound of the 90% prediction interval.
 
-Example of calling each endpoint can be found in example_calls.py
+Example of calling each endpoint can be found in `examples/example_calls.ipynb`
 
 ## Configuration
 
@@ -209,14 +209,37 @@ docker run --rm -p 8080:8080 -v "$(pwd)/models:/opt/ml/model" echoserve
 ## Deploy to SageMaker
 
 ```bash
-python deploy.py --action deploy      # create model → endpoint config → endpoint → wait
-python deploy.py --action teardown    # delete all three
+python infra/deploy_endpoint.py --action deploy      # create model → endpoint config → endpoint → wait
+python infra/deploy_endpoint.py --action teardown    # delete all three
 ```
 
-`deploy.py --action deploy` runs `create_model()` → `create_endpoint_config()` → `create_endpoint()`, then blocks on the `endpoint_in_service` waiter and prints `endpoint InService`. Each create step is idempotent — an existing resource is logged and skipped.
+`deploy_endpoint.py --action deploy` runs `create_model()` → `create_endpoint_config()` → `create_endpoint()`, then blocks on the `endpoint_in_service` waiter and prints `endpoint InService`. Each create step is idempotent — an existing resource is logged and skipped.
 
 What gets provisioned:
 
 - **Model** — points at the ECR image with `ModelDataSource` as an **uncompressed** `S3Prefix` (`CompressionType: "None"`), so the two ~120 MB `.onnx` files are mounted directly at `/opt/ml/model`. No `model.tar.gz` packaging step.
 - **Endpoint config** — one `ml.m5.xlarge` instance, variant `AllTraffic`, `MaxConcurrentInvocationsPerInstance: 1`, async output to `s3://<your-bucket>/echo-serve/preds-success/` and failures to `.../preds-fail/`.
 - **Endpoint** — `serving-echo-async`.
+
+---
+
+## Deploy the API Gateway
+
+```bash
+pip install boto3
+python infra/deploy_api.py
+```
+
+The script reads `config.ini` from the repo root (it can be run from any directory) and uses these `[aws]` keys:
+
+| Key | Default | Effect |
+|---|---|---|
+| `region` | required | Fills `{REGION}` in the template and sets the boto3 region |
+| `account_id` | required | Fills `{ACCOUNT_ID}` in the template |
+| `profile` | `default` | AWS CLI profile to use |
+| `template` | `infra/gateway/gateway.json` | Template path, relative to the repo root |
+| `stage` | `dev` | Stage to deploy to |
+
+It renders the template to `rendered_policy/gateway.json` (git-ignored), then looks up a REST API by the template's `info.title` (`echo-predict`). If one exists, it is **overwritten in full**, so changes made in the console are lost. Otherwise a new API is imported. Either way, the API is then deployed to the stage and the invoke URL is logged.
+
+The Lambda functions `UploadVideo`, `PollPredict` and `FetchPredict`, and the IAM role `apigateway-lambda-role`, must already exist.
