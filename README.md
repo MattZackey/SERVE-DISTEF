@@ -1,150 +1,79 @@
 # SERVE-CONFIDEF
 
 Serving EchoNet ejection-fraction predictions with calibrated **90% prediction intervals** on AWS SageMaker Asynchronous Inference.
+
 ---
 
 ## 1. Architecture
 
-### 1.1 Submitting a prediction
-
 ```mermaid
-sequenceDiagram
-    participant C as Client
-    participant G as API Gateway (SigV4)
-    participant U as λ UploadVideo
-    participant SI as S3 (input)
-    participant R as λ RecordPredictVideo
-    participant D as DynamoDB (EchoStatus)
-    participant E as ECR (echo:latest)
-    participant M as SageMaker async endpoint
-    participant SO as S3 (preds-success / preds-fail)
-    participant N as SNS (EchoPredSuccess / EchoPredFail)
-    participant H as λ completion handler
+flowchart LR
+    C([Client])
 
-    E-->>M: container image pulled at deploy
-    C->>G: POST /upload (video)
-    G->>U: invoke
-    U->>SI: put_object(input/<job_id>.avi)
-    U-->>C: { job_id }
-    SI->>R: S3 event
-    R->>D: put_item(status = queued)
-    R->>M: invoke_endpoint_async (on successful write)
-    M->>SI: read input video
-    M->>SO: write prediction JSON
-    M->>N: publish success / failure
-    N->>H: trigger
-    H->>D: update status = success / failed + output_location
-```
-
-### 1.2 Polling and fetching result
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant G as API Gateway (SigV4)
-    participant P as λ PollPredict
-    participant F as λ FetchPredict
-    participant D as DynamoDB (EchoStatus)
-    participant S as S3 (preds-success)
-
-    loop until status is success or failed
-        C->>G: GET /poll?job_id=...
-        G->>P: invoke
-        P->>D: get_item(job_id)
-        D-->>P: status (queued / success / failed)
-        P-->>C: { job_id, status }
+    subgraph API["API Gateway · SigV4"]
+        UP["POST /upload"]
+        PO["GET /poll"]
+        FE["GET /fetch"]
     end
-    C->>G: GET /fetch?job_id=...
-    G->>F: invoke
-    F->>D: get_item(job_id)
-    D-->>F: output_location
-    F->>S: get_object(output_location)
-    S-->>F: prediction JSON
-    F-->>C: { job_id, status, ejection_fraction, quantiles }
+
+    subgraph Submit["Submit"]
+        U["λ UploadVideo"]
+        R["λ RecordPredictVideo"]
+    end
+
+    subgraph Infer["Inference"]
+        M["SageMaker async endpoint<br/>EF + quantile ONNX models"]
+        N["SNS<br/>success / fail"]
+        H["λ completion handler"]
+    end
+
+    subgraph Read["Read results"]
+        P["λ PollPredict"]
+        F["λ FetchPredict"]
+    end
+
+    SI[("S3<br/>uploaded videos")]
+    SO[("S3<br/>predictions")]
+    D[("DynamoDB<br/>job status")]
+
+    C --> UP --> U -->|"1 · save video"| SI
+    SI -->|"2 · S3 event"| R
+    R -->|"3 · status = queued"| D
+    R -->|"4 · invoke async"| M
+    M -->|"5 · write result"| SO
+    M -->|"6 · notify"| N --> H -->|"7 · status = success / failed"| D
+
+    C --> PO --> P -->|"read status"| D
+    C --> FE --> F -->|"read location"| D
+    F -->|"read result"| SO
 ```
+
+The client uploads a video and gets back a `job_id`, polls `/poll` until the job is `success` or `failed`, then calls `/fetch` for the prediction.
+
+More detail:
+
+- [docs/architecture.md](docs/architecture.md): step-by-step sequence diagrams for submitting and fetching a prediction
+- [docs/api.md](docs/api.md): full API reference for `/upload`, `/poll` and `/fetch`
+- [docs/design-decisions.md](docs/design-decisions.md): why asynchronous inference, ONNX, and SageMaker over EC2
+- [docs/known-limitations.md](docs/known-limitations.md): known weaknesses and how they could be fixed
 
 ---
 
 ## 2. API reference
 
-### 2.1 API Gateway
+Three SigV4-signed routes on API Gateway:
 
-**Base URL:** `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>`.
-
-**Authentication:** every route uses IAM auth. Requests must be signed with **SigV4**. Unsigned or wrongly signed requests are rejected by API Gateway with `403` before any Lambda runs.
-
-All responses are JSON (`Content-Type: application/json`). Errors have the shape `{"error": "<message>"}`.
-
-**Job lifecycle:** `POST /upload` → poll `GET /poll` until `status` is `success` or `failed` → `GET /fetch` for the result.
-
-| Status | Meaning |
+| Route | Purpose |
 |---|---|
-| `queued` | Job recorded in DynamoDB and sent to the SageMaker async endpoint |
-| `success` | Prediction written to S3. Call `/fetch` |
-| `failed` | Inference failed. `failure_reason` may be included |
+| `POST /upload` | Upload a raw `.avi` video and get a job ID back |
+| `GET /poll?job_id=<id>` | Check the job status: `queued`, `success` or `failed` |
+| `GET /fetch?job_id=<id>` | Get the EF point estimate and the 90% prediction interval |
 
-### `POST /upload`
+See [docs/api.md](docs/api.md) for authentication, request and response shapes, and status codes. [`examples/example_calls.ipynb`](examples/example_calls.ipynb) has an example call for each route.
 
-Upload one echo video. The request body is the **raw `.avi` file bytes**, not multipart form data or JSON.
+## 3. Known limitations
 
-**Headers**
-
-| Header | Notes |
-|---|---|
-| `Content-Type` | Must be `video/x-msvideo`|
-
-**`201 Created`**
-
-```json
-{
-  "id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a"
-}
-```
-
-### `GET /poll?job_id=<id>`
-
-Return the current status of a job. Reads DynamoDB with strong consistency, so a status change is visible right away.
-
-```json
-{
-  "job_id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a",
-  "status": "queued",
-  "created_at": "2026-11-01T07:45:08.574570+00:00"
-}
-```
-or 
-```json
-{
-  "job_id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a",
-  "status": "success",
-  "created_at": "2026-11-01T07:45:08.574570+00:00"
-}
-```
-or 
-```json
-{
-  "job_id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a",
-  "status": "failed",
-  "created_at": "2026-11-01T07:45:08.574570+00:00"
-}
-```
-
-### `GET /fetch?job_id=<id>`
-
-Return the prediction for a finished job.
-
-
-```json
-{
-  "job_id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a",
-  "status": "success",
-  "ejection_fraction": 65.23590087890625,
-  "quantiles": [58.1862678527832, 73.97683715820312]
-}
-```
-`ejection_fraction` is the point estimate in percent. `quantiles` is the lower and upper bound of the 90% prediction interval.
-
-Example of calling each endpoint can be found in `examples/example_calls.ipynb`
+- **`/poll` can return 404 straight after upload.** The job record is written to DynamoDB asynchronously after the video lands in S3, so polling too early returns `404` until it exists. See [docs/known-limitations.md](docs/known-limitations.md) for the cause and possible fixes.
 
 ## Configuration
 
@@ -240,6 +169,6 @@ The script reads `config.ini` from the repo root (it can be run from any directo
 | `template` | `infra/gateway/gateway.json` | Template path, relative to the repo root |
 | `stage` | `dev` | Stage to deploy to |
 
-It renders the template to `rendered_policy/gateway.json` (git-ignored), then looks up a REST API by the template's `info.title` (`echo-predict`). If one exists, it is **overwritten in full**, so changes made in the console are lost. Otherwise a new API is imported. Either way, the API is then deployed to the stage and the invoke URL is logged.
+It renders the template to `rendered_policy/gateway.json`, then looks up a REST API by the template's `info.title` (`echo-predict`). If one exists, it is **overwritten in full**, so changes made in the console are lost. Otherwise a new API is imported. Either way, the API is then deployed to the stage and the invoke URL is logged.
 
 The Lambda functions `UploadVideo`, `PollPredict` and `FetchPredict`, and the IAM role `apigateway-lambda-role`, must already exist.
