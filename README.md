@@ -1,20 +1,11 @@
 # SERVE-CONFIDEF
 
 Serving EchoNet ejection-fraction predictions with calibrated **90% prediction intervals** on AWS SageMaker Asynchronous Inference.
-
 ---
 
-## What is EchoNet?
+## 1. Architecture
 
-An **echocardiogram** is a cardiac ultrasound a video of a beating heart. The single most important number read off one is the **ejection fraction (EF)**: the percentage of blood the left ventricle pushes out with each beat. Roughly 55–70% is normal; below ~40% indicates reduced cardiac function and is a primary diagnostic criterion for heart failure. Measuring it conventionally means a clinician manually tracing the ventricle at end-systole and end-diastole, which is slow and varies between readers. **EchoNet-Dynamic** (Stanford) is the public dataset and model family that automates this: ~10,036 apical-4-chamber echo clips at 112×112 with expert EF labels, with **R(2+1)D-18** as the reference architecture regressing EF directly from a video clip — no manual tracing, no intermediate segmentation. This repo serves that architecture: video in, EF out. 
-
-A bare point estimate, though, is misleading for this task, even expert readings on the same clip can disagree by several percentage points, and the model itself is far more confident on some clips (clean acquisition, clear endocardial border) than others, so a prediction of "42%" that could plausibly be anywhere from 35% to 49% is a very different clinical object than one that's tightly pinned down, a distinction a single float simply can't convey; to capture that, this service reports a 90% prediction interval alongside the point estimate.
-
----
-
-# Architecture
-
-## Submitting a prediction
+### 1.1 Submitting a prediction
 
 ```mermaid
 sequenceDiagram
@@ -45,7 +36,7 @@ sequenceDiagram
     H->>D: update status = success / failed + output_location
 ```
 
-## Polling and fetching result
+### 1.2 Polling and fetching result
 
 ```mermaid
 sequenceDiagram
@@ -74,33 +65,86 @@ sequenceDiagram
 
 ---
 
-# API reference
+## 2. API reference
 
-### `GET /ping`
+### 2.1 API Gateway
 
-SageMaker health check.
+**Base URL:** `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>`.
 
-- `200` → `{"status": "ok"}`
-- `503` → `{"detail": "ef model not loaded"}` or `"qr model not loaded"`
+**Authentication:** every route uses IAM auth. Requests must be signed with **SigV4**. Unsigned or wrongly signed requests are rejected by API Gateway with `403` before any Lambda runs.
 
-### `POST /invocations`
+All responses are JSON (`Content-Type: application/json`). Errors have the shape `{"error": "<message>"}`.
 
-The request body is the **raw video file bytes** — not JSON, not multipart form data. The bytes are written to a temp file (suffixed per `VIDEO_EXT`) and decoded by OpenCV.
+**Job lifecycle:** `POST /upload` → poll `GET /poll` until `status` is `success` or `failed` → `GET /fetch` for the result.
 
-- `400` — empty request body
-- `500` — decode or inference failure, with the exception message in `detail`
+| Status | Meaning |
+|---|---|
+| `queued` | Job recorded in DynamoDB and sent to the SageMaker async endpoint |
+| `success` | Prediction written to S3. Call `/fetch` |
+| `failed` | Inference failed. `failure_reason` may be included |
 
-**Response (current behavior):**
+### `POST /upload`
+
+Upload one echo video. The request body is the **raw `.avi` file bytes**, not multipart form data or JSON.
+
+**Headers**
+
+| Header | Notes |
+|---|---|
+| `Content-Type` | Must be `video/x-msvideo`|
+
+**`201 Created`**
 
 ```json
 {
-  "ejection_fraction": {
-    "point_estimate": 58.2,
-    "quantiles": [47.1, 69.4]
-  }
+  "id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a"
 }
 ```
----
+
+### `GET /poll?job_id=<id>`
+
+Return the current status of a job. Reads DynamoDB with strong consistency, so a status change is visible right away.
+
+```json
+{
+  "job_id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a",
+  "status": "queued",
+  "created_at": "2026-11-01T07:45:08.574570+00:00"
+}
+```
+or 
+```json
+{
+  "job_id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a",
+  "status": "success",
+  "created_at": "2026-11-01T07:45:08.574570+00:00"
+}
+```
+or 
+```json
+{
+  "job_id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a",
+  "status": "failed",
+  "created_at": "2026-11-01T07:45:08.574570+00:00"
+}
+```
+
+### `GET /fetch?job_id=<id>`
+
+Return the prediction for a finished job.
+
+
+```json
+{
+  "job_id": "3f2b8c1e-9d4a-4e7b-a1c2-5f6e7d8c9b0a",
+  "status": "success",
+  "ejection_fraction": 65.23590087890625,
+  "quantiles": [58.1862678527832, 73.97683715820312]
+}
+```
+`ejection_fraction` is the point estimate in percent. `quantiles` is the lower and upper bound of the 90% prediction interval.
+
+Example of calling each endpoint can be found in example_calls.py
 
 ## Configuration
 
@@ -126,7 +170,9 @@ model_name = serving-echo-model
 config_name = serving-echo-async-config
 max_concurrent = 1
 endpoint = serving-echo-async
-instance = ml.m5.xlarge
+instance = ml.g6.xlarge
+variant_name = primary
+enable_sns = true
 ```
 
 **Environment variables**
@@ -139,40 +185,30 @@ instance = ml.m5.xlarge
 
 ---
 
-
-
 ## Docker build and ECR push
 
 ```bash
 # Build for the cloud — the platform/provenance flags are REQUIRED
-docker build --platform linux/amd64 --provenance=false --sbom=false \
-             --output type=docker -t echoserve .
+docker build -t echoserve .
 
 docker tag echoserve <account-id>.dkr.ecr.<region>.amazonaws.com/echo:latest
 
-aws ecr get-login-password --region <region> \
-  | docker login --username AWS --password-stdin \
-        <account-id>.dkr.ecr.<region>.amazonaws.com
+aws ecr get-login-password --region <region> docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
 
 docker push <account-id>.dkr.ecr.<region>.amazonaws.com/echo:latest
 ```
 
-`--provenance=false --sbom=false` are not optional: without them BuildKit emits an OCI multi-arch manifest with attestations, which SageMaker rejects at `create_model` time with an unhelpful image-format error. `--platform linux/amd64` matters when building on Apple Silicon.
-
-Run the same image locally, mounting the models rather than baking them in:
+Run the same image locally:
 
 ```bash
 docker build -t echoserve .
 docker run --rm -p 8080:8080 -v "$(pwd)/models:/opt/ml/model" echoserve
 ```
-
 ---
 
 ## Deploy to SageMaker
 
 ```bash
-aws s3 cp models/ s3://<your-bucket>/models/ --recursive
-
 python deploy.py --action deploy      # create model → endpoint config → endpoint → wait
 python deploy.py --action teardown    # delete all three
 ```
@@ -184,69 +220,3 @@ What gets provisioned:
 - **Model** — points at the ECR image with `ModelDataSource` as an **uncompressed** `S3Prefix` (`CompressionType: "None"`), so the two ~120 MB `.onnx` files are mounted directly at `/opt/ml/model`. No `model.tar.gz` packaging step.
 - **Endpoint config** — one `ml.m5.xlarge` instance, variant `AllTraffic`, `MaxConcurrentInvocationsPerInstance: 1`, async output to `s3://<your-bucket>/echo-serve/preds-success/` and failures to `.../preds-fail/`.
 - **Endpoint** — `serving-echo-async`.
-
-`teardown()` has no error handling and will raise if the resources are already gone.
-
----
-
-## Invoking the async endpoint
-
-```python
-import boto3, json, time
-from urllib.parse import urlparse
-
-s3 = boto3.client("s3", region_name="<region>")
-rt = boto3.client("sagemaker-runtime", region_name="<region>")
-
-BUCKET = "<your-bucket>"
-s3.upload_file("study.avi", BUCKET, "input/study.avi")
-
-resp = rt.invoke_endpoint_async(
-    EndpointName="serving-echo-async",
-    InputLocation=f"s3://{BUCKET}/input/study.avi",
-)
-out = urlparse(resp["OutputLocation"])   # s3://<bucket>/echo-serve/preds-success/<uuid>.out
-
-# Poll until the result object appears
-while True:
-    try:
-        body = s3.get_object(Bucket=out.netloc, Key=out.path.lstrip("/"))["Body"].read()
-        break
-    except s3.exceptions.NoSuchKey:
-        time.sleep(5)
-
-result = json.loads(body)["ejection_fraction"]
-q = result["quantiles"]
-print(f"EF {result['ejection_fraction']:.1f}% (90% PI: {q[0]:.1f}–{q[1]:.1f})")
-```
-
-SageMaker streams the S3 object straight into the container as the `/invocations` body, so the container never needs S3 credentials of its own.
-
----
-
-## Local development
-
-Requires Python 3.11.
-
-```bash
-pip install -r requirements.txt
-
-# Create config.ini (see Configuration below), then place the ONNX
-# artifacts in ./models/
-
-python serve.py                    # uvicorn on 0.0.0.0:8080
-```
-
-In another shell:
-
-```bash
-curl -s localhost:8080/ping
-# {"status":"ok"}
-
-curl -s -X POST --data-binary @test/0X1A3E7BF1DFB132FB.avi \
-     localhost:8080/invocations
-```
-
-`MODEL_DIR` (`serve.py:9-11`) defaults to `/opt/ml/model` and **falls back to `./models`** when that path doesn't exist — which is what lets the same code run locally and in SageMaker with no changes.
-
----
