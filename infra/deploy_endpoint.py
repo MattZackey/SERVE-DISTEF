@@ -44,7 +44,6 @@ except ValueError as e:
     raise SystemExit(f"bad value in aws section {e}")
 
 sm      = boto3.client("sagemaker", region_name=REGION)
-# sns     = boto3.client("sns", region_name=REGION)
 s3      = boto3.client("s3", region_name=REGION)
 runtime = boto3.client("sagemaker-runtime", region_name=REGION)
 client = boto3.client("application-autoscaling", region_name = REGION)
