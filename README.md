@@ -77,7 +77,9 @@ See [docs/api.md](docs/api.md) for authentication, request and response shapes, 
 
 ## Configuration
 
-`config.ini` is git-ignored. Create it in the repo root:
+There are two config files, both git-ignored.
+
+`config.ini` in the repo root holds the inference settings. It is baked into the Docker image and read by `serve.py`:
 
 ```ini
 [model]
@@ -87,22 +89,15 @@ batch_size = 4
 num_frames = 64
 period = 2
 target_image_size = 112
-
-[aws]
-region = us-east-1
-account_id = <account-id>
-bucket = <your-bucket>
-ecr_repo = echo:latest
-model_data_prefix = models/
-role_name = arn:aws:iam::<account-id>:role/service-role/<sagemaker-execution-role>
-model_name = serving-echo-model
-config_name = serving-echo-async-config
-max_concurrent = 1
-endpoint = serving-echo-async
-instance = ml.g6.xlarge
-variant_name = primary
-enable_sns = true
 ```
+
+`infra/config.ini` holds the deployment settings (`[aws]` and `[autoscaling]`) read by `infra/deploy_endpoint.py` and `infra/deploy_api.py`. Copy [infra/config.example.ini](infra/config.example.ini) and fill in the placeholders:
+
+```bash
+cp infra/config.example.ini infra/config.ini
+```
+
+The `[autoscaling]` values are explained in [docs/scaling.md](docs/scaling.md).
 
 **Environment variables**
 
@@ -159,7 +154,7 @@ pip install boto3
 python infra/deploy_api.py
 ```
 
-The script reads `config.ini` from the repo root (it can be run from any directory) and uses these `[aws]` keys:
+The script reads `infra/config.ini` (it can be run from any directory) and uses these `[aws]` keys:
 
 | Key | Default | Effect |
 |---|---|---|

@@ -13,15 +13,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load in config from the repo root, wherever the script is run from
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.ini"
+# Load in config from infra/, wherever the script is run from
+CONFIG_PATH = Path(__file__).resolve().parent / "config.ini"
 _cfg = configparser.ConfigParser()
 if not _cfg.read(CONFIG_PATH):
-    raise SystemExit("could not read config file")
+    raise SystemExit(f"could not read config file at {CONFIG_PATH}")
 try:
     aws_cfg = _cfg["aws"]
-except KeyError:
-    raise SystemExit(f"no [aws] section in config.ini")
+    scaling_cfg = _cfg["autoscaling"]
+except KeyError as e:
+    raise SystemExit(f"no {e} section in {CONFIG_PATH}")
 
 try:
     REGION       = aws_cfg["region"]
@@ -43,8 +44,38 @@ except KeyError as e:
 except ValueError as e:
     raise SystemExit(f"bad value in aws section {e}")
 
-sm      = boto3.client("sagemaker", region_name=REGION)
-s3      = boto3.client("s3", region_name=REGION)
+SCALING_KEYS = [
+    "min_capacity",
+    "max_capacity",
+    "target_backlog_per_instance",
+    "scale_in_cooldown",
+    "scale_out_cooldown",
+    "step_cooldown",
+    "alarm_evaluation_periods",
+    "alarm_datapoints_to_alarm",
+    "alarm_threshold",
+    "alarm_period",
+]
+missing = [key for key in SCALING_KEYS if key not in scaling_cfg]
+if missing:
+    raise SystemExit(f"missing in autoscaling section: {', '.join(missing)}")
+
+try:
+    MIN_CAPACITY = scaling_cfg.getint("min_capacity")
+    MAX_CAPACITY = scaling_cfg.getint("max_capacity")
+    TARGET_BACKLOG = scaling_cfg.getfloat("target_backlog_per_instance")
+    SCALE_IN_COOLDOWN = scaling_cfg.getint("scale_in_cooldown")
+    SCALE_OUT_COOLDOWN = scaling_cfg.getint("scale_out_cooldown")
+    STEP_COOLDOWN = scaling_cfg.getint("step_cooldown")
+    ALARM_EVAL_PERIODS = scaling_cfg.getint("alarm_evaluation_periods")
+    ALARM_DATAPOINTS = scaling_cfg.getint("alarm_datapoints_to_alarm")
+    ALARM_THRESHOLD = scaling_cfg.getfloat("alarm_threshold")
+    ALARM_PERIOD = scaling_cfg.getint("alarm_period")
+except ValueError as e:
+    raise SystemExit(f"bad value in autoscaling section {e}")
+
+sm = boto3.client("sagemaker", region_name=REGION)
+s3 = boto3.client("s3", region_name=REGION)
 runtime = boto3.client("sagemaker-runtime", region_name=REGION)
 client = boto3.client("application-autoscaling", region_name = REGION)
 cw_client = boto3.client("cloudwatch", region_name = REGION)
@@ -193,66 +224,66 @@ def add_scaling():
     
     try:
         # Configure Autoscaling on asynchronous endpoint
-        response = client.register_scalable_target(
-            ServiceNamespace="sagemaker",
-            ResourceId=resource_id,
-            ScalableDimension="sagemaker:variant:DesiredInstanceCount",
-            MinCapacity=0, # Scale instances down to zero
-            MaxCapacity=1,
+        client.register_scalable_target(
+            ServiceNamespace = "sagemaker",
+            ResourceId = resource_id,
+            ScalableDimension = "sagemaker:variant:DesiredInstanceCount",
+            MinCapacity = MIN_CAPACITY,
+            MaxCapacity = MAX_CAPACITY,
         )
-        
-        # Configure scaling policy for instances
-        response = client.put_scaling_policy(
-            PolicyName="Invocations-ScalingPolicy",
-            ServiceNamespace="sagemaker",  # The namespace of the AWS service that provides the resource.
-            ResourceId=resource_id,  # Endpoint name
-            ScalableDimension="sagemaker:variant:DesiredInstanceCount",  # SageMaker supports only Instance Count
-            PolicyType="TargetTrackingScaling",  # 'StepScaling'|'TargetTrackingScaling'
-            TargetTrackingScalingPolicyConfiguration={
-                "TargetValue": 10.0,  # The target value for the metric. - here the metric is - SageMakerVariantInvocationsPerInstance
+
+        # Track queued requests per instance while at least one instance is running
+        client.put_scaling_policy(
+            PolicyName = "Invocations-ScalingPolicy",
+            ServiceNamespace = "sagemaker",
+            ResourceId = resource_id,
+            ScalableDimension = "sagemaker:variant:DesiredInstanceCount",
+            PolicyType = "TargetTrackingScaling",
+            TargetTrackingScalingPolicyConfiguration = {
+                "TargetValue": TARGET_BACKLOG,
                 "CustomizedMetricSpecification": {
                     "MetricName": "ApproximateBacklogSizePerInstance",
                     "Namespace": "AWS/SageMaker",
                     "Dimensions": [{"Name": "EndpointName", "Value": ENDPOINT}],
                     "Statistic": "Average",
                 },
-                "ScaleInCooldown": 60,  # ScaleInCooldown - The amount of time, in seconds, after a scale in activity completes before another scale in activity can start.
-                "ScaleOutCooldown": 30,  # ScaleOutCooldown - The amount of time, in seconds, after a scale out activity completes before another scale out activity can start.
+                "ScaleInCooldown": SCALE_IN_COOLDOWN,
+                "ScaleOutCooldown": SCALE_OUT_COOLDOWN,
             },
         )
-        
+
         # Scale instances back up from zero
         response = client.put_scaling_policy(
-            PolicyName="HasBacklogWithoutCapacity-ScalingPolicy",
-            ServiceNamespace="sagemaker",
-            ResourceId=resource_id,
-            ScalableDimension="sagemaker:variant:DesiredInstanceCount",
-            PolicyType="StepScaling",
-            StepScalingPolicyConfiguration={
+            PolicyName = "HasBacklogWithoutCapacity-ScalingPolicy",
+            ServiceNamespace = "sagemaker",
+            ResourceId = resource_id,
+            ScalableDimension = "sagemaker:variant:DesiredInstanceCount",
+            PolicyType = "StepScaling",
+            StepScalingPolicyConfiguration = {
                 "AdjustmentType": "ChangeInCapacity",
                 "MetricAggregationType": "Average",
-                "Cooldown": 30,
+                "Cooldown": STEP_COOLDOWN,
                 "StepAdjustments": [
                     {"MetricIntervalLowerBound": 0, "ScalingAdjustment": 1},
                 ],
             },
         )
         step_scaling_policy_arn = response["PolicyARN"]
-        
+
         # Add metric to cloud watch
         cw_client.put_metric_alarm(
-            AlarmName="HasBacklogWithoutCapacity-Alarm",
-            MetricName="HasBacklogWithoutCapacity",
-            Namespace="AWS/SageMaker",
-            Statistic="Average",
-            EvaluationPeriods=2,
-            DatapointsToAlarm=2,
-            Threshold=1,
-            ComparisonOperator="GreaterThanOrEqualToThreshold",
-            TreatMissingData="missing",
-            Dimensions=[{"Name": "EndpointName", "Value": ENDPOINT}],
-            Period=60,
-            AlarmActions=[step_scaling_policy_arn],
+            AlarmName = "HasBacklogWithoutCapacity-Alarm",
+            MetricName = "HasBacklogWithoutCapacity",
+            Namespace = "AWS/SageMaker",
+            Statistic = "Average",
+            EvaluationPeriods = ALARM_EVAL_PERIODS,
+            DatapointsToAlarm = ALARM_DATAPOINTS,
+            Threshold = ALARM_THRESHOLD,
+            ComparisonOperator = "GreaterThanOrEqualToThreshold",
+            TreatMissingData = "missing",
+            Dimensions = [{"Name": "EndpointName", "Value": ENDPOINT}],
+            Period = ALARM_PERIOD,
+            AlarmActions = [step_scaling_policy_arn],
         )
     
     except client.exceptions.ObjectNotFoundException:
@@ -269,45 +300,47 @@ def delete_scaling():
     # Delete step-scaling policy
     try:
         client.delete_scaling_policy(
-            PolicyName="HasBacklogWithoutCapacity-ScalingPolicy",
-            ServiceNamespace="sagemaker",
-            ResourceId=resource_id,
-            ScalableDimension="sagemaker:variant:DesiredInstanceCount",
+            PolicyName = "HasBacklogWithoutCapacity-ScalingPolicy",
+            ServiceNamespace = "sagemaker",
+            ResourceId = resource_id,
+            ScalableDimension = "sagemaker:variant:DesiredInstanceCount",
         )
     except client.exceptions.ObjectNotFoundException:
-        logger.info("Target-tracking policy not found, skipping.")
+        logger.info("Step-scaling policy not found, skipping.")
     except ClientError as ce:
         logger.error(f"Failed to delete step-scaling policy: {ce}")
         raise
-        
-    
+
+
     # Delete target-tracking policy
     try:
         client.delete_scaling_policy(
-            PolicyName="Invocations-ScalingPolicy",
-            ServiceNamespace="sagemaker",
-            ResourceId=resource_id,
-            ScalableDimension="sagemaker:variant:DesiredInstanceCount",
+            PolicyName = "Invocations-ScalingPolicy",
+            ServiceNamespace = "sagemaker",
+            ResourceId = resource_id,
+            ScalableDimension = "sagemaker:variant:DesiredInstanceCount",
         )
     except client.exceptions.ObjectNotFoundException:
         logger.info("Target-tracking policy not found, skipping.")
     except ClientError as ce:
-        logger.error(f"Failed to delete step-scaling policy: {ce}")
+        logger.error(f"Failed to delete target-tracking policy: {ce}")
         raise
-    
+
     # Delete the CloudWatch alarm
     try:
-        cw_client.delete_alarms(AlarmNames=["HasBacklogWithoutCapacity-Alarm"])
+        cw_client.delete_alarms(
+            AlarmNames = ["HasBacklogWithoutCapacity-Alarm"],
+        )
     except ClientError as ce:
         logger.error(f"Failed to delete CloudWatch alarm: {ce}")
         raise
-    
+
     # Deregister the scalable target (removes autoscaling entirely)
     try:
         client.deregister_scalable_target(
-            ServiceNamespace="sagemaker",
-            ResourceId=resource_id,
-            ScalableDimension="sagemaker:variant:DesiredInstanceCount",
+            ServiceNamespace = "sagemaker",
+            ResourceId = resource_id,
+            ScalableDimension = "sagemaker:variant:DesiredInstanceCount",
         )
     except client.exceptions.ObjectNotFoundException:
         logger.info("Scalable target not found, skipping.")

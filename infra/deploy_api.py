@@ -15,11 +15,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = ROOT / "config.ini"
+CONFIG_PATH = ROOT / "infra" / "config.ini"
 
 cfg = configparser.ConfigParser()
 if not cfg.read(CONFIG_PATH):
-    raise SystemExit(f"config.ini not found at {CONFIG_PATH}")
+    raise SystemExit(f"infra/config.ini not found at {CONFIG_PATH}")
 try:
     aws = cfg["aws"]
 except KeyError:
@@ -36,7 +36,7 @@ for placeholder, key in REQUIRED.items():
     else:
         missing.append(key)
 if missing:
-    raise SystemExit(f"Missing in config.ini [aws]: {', '.join(missing)}")
+    raise SystemExit(f"Missing in infra/config.ini [aws]: {', '.join(missing)}")
 
 session = boto3.Session(
     profile_name = aws.get("profile", "default"),
