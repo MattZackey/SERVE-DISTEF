@@ -2,7 +2,7 @@ config.ini
 Todo
 models
 scripts
-test
+dummy-tests
 command.sh
 .claude
 __pycache__/
