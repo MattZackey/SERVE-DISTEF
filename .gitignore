@@ -11,3 +11,6 @@ examples
 rendered_policy/
 .DS_Store
 notes
+.pytest_cache/
+CLAUDE.md
+tests

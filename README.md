@@ -167,3 +167,29 @@ The script reads `infra/config.ini` (it can be run from any directory) and uses 
 It renders the template to `rendered_policy/gateway.json`, then looks up a REST API by the template's `info.title` (`echo-predict`). If one exists, it is **overwritten in full**, so changes made in the console are lost. Otherwise a new API is imported. Either way, the API is then deployed to the stage and the invoke URL is logged.
 
 The Lambda functions `UploadVideo`, `PollPredict` and `FetchPredict`, and the IAM role `apigateway-lambda-role`, must already exist.
+
+---
+
+## Deploy the UploadVideo Lambda (Terraform)
+
+`UploadVideo` is managed by Terraform in [infra/terraform/](infra/terraform/). The other Lambdas are still deployed by hand.
+
+```bash
+cd infra/terraform
+cp terraform.tfvars.example terraform.tfvars   # fill in region and bucket_name
+terraform init
+terraform plan     # read-only; review before applying
+terraform apply
+```
+
+Terraform zips `lambdas/upload_video/handler.py` and manages the function, its log group (30-day retention) and its execution role `upload-video-lambda-role`. That role can only `s3:PutObject` under `<bucket_name>/<upload_folder>/`. [imports.tf](infra/terraform/imports.tf) adopts the existing function and log group on the first apply, so they aren't recreated. On that first apply the function also moves to the new role. The old hand-made role is left in place and can be deleted afterwards.
+
+State is stored locally in `infra/terraform/terraform.tfstate`, which is git-ignored along with `terraform.tfvars`.
+
+---
+
+## Future state: all infrastructure in Terraform
+
+The goal is to deploy the entire stack from [infra/terraform/](infra/terraform/), so one `terraform apply` builds it and one `terraform destroy` removes it. 
+
+Once every resource is in Terraform, `deploy_endpoint.py` and `deploy_api.py` can be retired. Existing resources will be adopted with `import` blocks, as [imports.tf](infra/terraform/imports.tf) already does for `UploadVideo`, so nothing has to be recreated.
