@@ -170,24 +170,6 @@ The Lambda functions `UploadVideo`, `PollPredict` and `FetchPredict`, and the IA
 
 ---
 
-## Deploy the UploadVideo Lambda (Terraform)
-
-`UploadVideo` is managed by Terraform in [infra/terraform/](infra/terraform/). The other Lambdas are still deployed by hand.
-
-```bash
-cd infra/terraform
-cp terraform.tfvars.example terraform.tfvars   # fill in region and bucket_name
-terraform init
-terraform plan     # read-only; review before applying
-terraform apply
-```
-
-Terraform zips `lambdas/upload_video/handler.py` and manages the function, its log group (30-day retention) and its execution role `upload-video-lambda-role`. That role can only `s3:PutObject` under `<bucket_name>/<upload_folder>/`. [imports.tf](infra/terraform/imports.tf) adopts the existing function and log group on the first apply, so they aren't recreated. On that first apply the function also moves to the new role. The old hand-made role is left in place and can be deleted afterwards.
-
-State is stored locally in `infra/terraform/terraform.tfstate`, which is git-ignored along with `terraform.tfvars`.
-
----
-
 ## Future state: all infrastructure in Terraform
 
 The goal is to deploy the entire stack from [infra/terraform/](infra/terraform/), so one `terraform apply` builds it and one `terraform destroy` removes it. 
