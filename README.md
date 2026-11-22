@@ -1,4 +1,4 @@
-# SERVE-CONFIDEF
+# SERVE-DIST
 
 Serving EchoNet ejection-fraction predictions with calibrated **90% prediction intervals** on AWS SageMaker Asynchronous Inference.
 
@@ -166,7 +166,7 @@ The script reads `infra/config.ini` (it can be run from any directory) and uses 
 
 It renders the template to `rendered_policy/gateway.json`, then looks up a REST API by the template's `info.title` (`echo-predict`). If one exists, it is **overwritten in full**, so changes made in the console are lost. Otherwise a new API is imported. Either way, the API is then deployed to the stage and the invoke URL is logged.
 
-The Lambda functions `UploadVideo`, `PollPredict` and `FetchPredict`, and the IAM role `apigateway-lambda-role`, must already exist.
+The Lambda functions `UploadVideo`, `PollPredict`, `FetchPredict` and `RecordPredict`, and the IAM role `apigateway-lambda-role`, must already exist.
 
 ---
 
