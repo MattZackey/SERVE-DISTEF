@@ -7,7 +7,6 @@ command.sh
 .claude
 __pycache__/
 *.pyc
-examples
 rendered_policy/
 .DS_Store
 notes
