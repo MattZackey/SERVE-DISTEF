@@ -172,6 +172,6 @@ The Lambda functions `UploadVideo`, `PollPredict`, `FetchPredict` and `RecordPre
 
 ## Future state: all infrastructure in Terraform
 
-The goal is to deploy the entire stack from [infra/terraform/](infra/terraform/), so one `terraform apply` builds it and one `terraform destroy` removes it. 
+The goal is to deploy the entire stack from [infra/deploy/](infra/deploy/), so one `terraform apply` builds it and one `terraform destroy` removes it. 
 
-Once every resource is in Terraform, `deploy_endpoint.py` and `deploy_api.py` can be retired. Existing resources will be adopted with `import` blocks, as [imports.tf](infra/terraform/imports.tf) already does for `UploadVideo`, so nothing has to be recreated.
+Once every resource is in Terraform, `deploy_endpoint.py` and `deploy_api.py` can be retired.
